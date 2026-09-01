@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: prayaas-backend
+    env: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    # app:app, not api:app — the API moved to app.py.
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      # Matches runtime.txt / .python-version. The old 3.10.11 disagreed with both.
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: ENVIRONMENT
+        value: production
+      # Secrets: set these in the Render dashboard, never in this file.
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      # Weights are pulled from Hugging Face on first boot if not in the image.
+      - key: MODEL_URL
+        value: https://huggingface.co/akhilarayampalli/Prayaas/resolve/main/model_weights.keras
+      - key: MODEL_JSON_URL
+        value: https://huggingface.co/akhilarayampalli/Prayaas/resolve/main/model.json
+      # Set to the deployed frontend origin.
+      - key: CORS_ORIGINS
+        value: http://localhost:5173

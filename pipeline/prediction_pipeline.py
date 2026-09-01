@@ -1,0 +1,88 @@
+import base64
+import io
+
+import numpy as np
+from PIL import Image
+
+from prayaas.config.configuration import CLASS_LABELS, settings
+from prayaas.logger import logger
+from pipeline.data_preprocessing import DataPreprocessing
+from pipeline.gradcam import compute_heatmap, colorize, overlay_heatmap
+from pipeline.model_loader import load_model
+
+
+class PredictionPipeline:
+    """Scores images against the pretrained classifier."""
+
+    def __init__(self) -> None:
+        self.preprocessor = DataPreprocessing()
+
+    def predict_array(self, batch: np.ndarray) -> np.ndarray:
+        """batch: (n, 224, 224, 3) float in [0, 1] -> (n, 3) probabilities."""
+        return load_model().predict(batch, verbose=0)
+
+    def predict_image(self, image: Image.Image) -> dict:
+        steps = []
+        array = self.preprocessor.from_pil(image, steps=steps)
+        batch = np.expand_dims(array, axis=0)
+        probabilities = self.predict_array(batch)[0]
+        result = self._format(probabilities)
+
+        try:
+            self._append_gradcam_steps(steps, batch, result["predicted_class"])
+        except Exception:
+            # The classification result must still ship even if the
+            # explainability overlay fails to render.
+            logger.exception("Grad-CAM heatmap generation failed")
+
+        result["processing_steps"] = [
+            {"label": label, "image": self._encode_png(step_image)} for label, step_image in steps
+        ]
+        return result
+
+    @staticmethod
+    def _append_gradcam_steps(steps: list, batch: np.ndarray, predicted_class: int) -> None:
+        """Appends heatmap + overlay images showing which regions of the scan
+        drove the model's prediction, so the UI can explain "how" it decided."""
+        base_rgb = np.array(steps[-1][1])  # last preprocessing stage, 224x224 uint8 RGB
+        heatmap = compute_heatmap(load_model(), batch, predicted_class)
+        steps.append(("AI Attention Heatmap", Image.fromarray(colorize(heatmap, base_rgb.shape[:2]))))
+        steps.append(("Heatmap Overlay (Suspicious Regions)", Image.fromarray(overlay_heatmap(heatmap, base_rgb))))
+
+    def predict_bytes(self, raw: bytes) -> dict:
+        with Image.open(io.BytesIO(raw)) as image:
+            return self.predict_image(image)
+
+    def predict_base64(self, encoded: str) -> dict:
+        """Accepts a bare base64 string or a data: URL, matching the old client."""
+        if "," in encoded and encoded.strip().startswith("data:"):
+            encoded = encoded.split(",", 1)[1]
+        return self.predict_bytes(base64.b64decode(encoded))
+
+    def predict_paths(self, paths: list[str]) -> list[dict]:
+        results = []
+        for start in range(0, len(paths), settings.batch_size):
+            chunk = paths[start : start + settings.batch_size]
+            batch = self.preprocessor.batch_from_paths(chunk)
+            results.extend(self._format(p) for p in self.predict_array(batch))
+            logger.info("Scored %s/%s images", min(start + len(chunk), len(paths)), len(paths))
+        return results
+
+    @staticmethod
+    def _encode_png(image: Image.Image) -> str:
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+    @staticmethod
+    def _format(probabilities: np.ndarray) -> dict:
+        index = int(np.argmax(probabilities))
+        return {
+            "predicted_class": index,
+            "label": CLASS_LABELS[index],
+            "confidence": round(float(probabilities[index]), 4),
+            # Percentages, matching the original API's response contract.
+            "probabilities": {
+                label: round(float(p) * 100, 2) for label, p in zip(CLASS_LABELS, probabilities)
+            },
+        }

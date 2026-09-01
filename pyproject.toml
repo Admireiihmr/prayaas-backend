@@ -1,0 +1,16 @@
+[project]
+name = "prayaas-backend"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "src"]
+testpaths = ["tests"]
+
+# Applies when backend/ is opened as the editor root. The workspace-root case is
+# covered by ../.vscode/settings.json, which Pylance reads instead of this file.
+[tool.pyright]
+extraPaths = ["src", "."]
