@@ -1,3 +1,13 @@
+---
+title: Prayaas Backend
+emoji: 🩺
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Prayaas Backend
 
 FastAPI service that screens oral cavity images with a pretrained 3-class classifier.
