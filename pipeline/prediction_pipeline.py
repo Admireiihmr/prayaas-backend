@@ -7,7 +7,7 @@ from PIL import Image
 from prayaas.config.configuration import CLASS_LABELS, settings
 from prayaas.logger import logger
 from pipeline.data_preprocessing import DataPreprocessing
-from pipeline.gradcam import compute_heatmap, colorize, overlay_heatmap
+from pipeline.gradcam import compute_heatmap, overlay_heatmap
 from pipeline.model_loader import load_model
 from pipeline.segmentation_pipeline import segment_lesion
 
@@ -58,11 +58,13 @@ class PredictionPipeline:
 
     @staticmethod
     def _append_gradcam_steps(steps: list, batch: np.ndarray, predicted_class: int) -> None:
-        """Appends heatmap + overlay images showing which regions of the scan
-        drove the model's prediction, so the UI can explain "how" it decided."""
-        base_rgb = np.array(steps[-1][1])  # last preprocessing stage, 224x224 uint8 RGB
+        """Appends the Grad-CAM heatmap blended onto the actual classifier
+        input, showing which regions drove the prediction. Derives its base
+        image from `batch` directly (not from `steps`) -- the CLAHE-processed
+        224x224 array the model actually saw is the correct overlay base
+        regardless of what's in the display-only `steps` list."""
+        base_rgb = (batch[0] * 255).astype(np.uint8)
         heatmap = compute_heatmap(load_model(), batch, predicted_class)
-        steps.append(("AI Attention Heatmap", Image.fromarray(colorize(heatmap, base_rgb.shape[:2]))))
         steps.append(("Heatmap Overlay (Suspicious Regions)", Image.fromarray(overlay_heatmap(heatmap, base_rgb))))
 
     def predict_bytes(self, raw: bytes) -> dict:
