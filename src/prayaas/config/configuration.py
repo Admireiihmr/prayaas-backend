@@ -78,12 +78,16 @@ class Settings:
     def unet_model_path(self) -> Path:
         """Weights for the lesion-segmentation model trained in
         src/prayaas/research/segmentation.ipynb. Weights-only (not a full
-        .keras model) so loading doesn't depend on tf_keras's full-model
-        deserialization, which breaks across minor version differences --
-        the architecture lives in pipeline/unet_architecture.py instead. No
-        MODEL_URL fallback for this one -- if it's missing, segmentation is
-        simply unavailable."""
-        return self.models_dir / "unet_segmentation.weights.h5"
+        .keras model), and deliberately NOT named "*.weights.h5" -- tf_keras
+        treats that exact suffix as its newer native weights format, which
+        goes through the same fragile cross-version deserialization as the
+        full .keras format and broke in prod ("Layer 'conv2d' expected 1
+        variables, but received 0 variables"). This name routes through the
+        legacy HDF5-by-topology loader instead, the same stable path
+        model_path (below) already relies on. Architecture lives in
+        pipeline/unet_architecture.py. No MODEL_URL fallback for this one --
+        if it's missing, segmentation is simply unavailable."""
+        return self.models_dir / "unet_segmentation_weights.h5"
 
     @property
     def metrics_path(self) -> Path:
