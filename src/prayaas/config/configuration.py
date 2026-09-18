@@ -76,10 +76,14 @@ class Settings:
 
     @property
     def unet_model_path(self) -> Path:
-        """Lesion-segmentation model trained in
-        src/prayaas/research/segmentation.ipynb. No MODEL_URL fallback for
-        this one -- if it's missing, segmentation is simply unavailable."""
-        return self.models_dir / "unet_segmentation.keras"
+        """Weights for the lesion-segmentation model trained in
+        src/prayaas/research/segmentation.ipynb. Weights-only (not a full
+        .keras model) so loading doesn't depend on tf_keras's full-model
+        deserialization, which breaks across minor version differences --
+        the architecture lives in pipeline/unet_architecture.py instead. No
+        MODEL_URL fallback for this one -- if it's missing, segmentation is
+        simply unavailable."""
+        return self.models_dir / "unet_segmentation.weights.h5"
 
     @property
     def metrics_path(self) -> Path:

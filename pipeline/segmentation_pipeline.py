@@ -2,8 +2,8 @@ import numpy as np
 from PIL import Image
 
 from pipeline.model_loader import load_segmentation_model
+from pipeline.unet_architecture import IMG_SIZE
 
-IMG_SIZE = 256
 _RED = (239, 68, 68)  # matches the frontend's "concerning" red
 
 
