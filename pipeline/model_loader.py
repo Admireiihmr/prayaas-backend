@@ -50,5 +50,25 @@ def reset_model_cache() -> None:
     load_model.cache_clear()
 
 
+@lru_cache(maxsize=1)
+def load_segmentation_model():
+    """Loads the U-Net lesion-segmentation model.
+
+    Unlike load_model(), this is a single .keras file saved with the
+    architecture included (ModelCheckpoint's default), so it loads directly
+    -- no separate json + weights, no MODEL_URL download fallback. If the
+    file isn't there, this raises and the caller treats segmentation as
+    unavailable rather than failing the whole prediction.
+    """
+    import tf_keras
+
+    logger.info("Loading segmentation model from %s", settings.unet_model_path.name)
+    return tf_keras.models.load_model(str(settings.unet_model_path), compile=False)
+
+
+def reset_segmentation_model_cache() -> None:
+    load_segmentation_model.cache_clear()
+
+
 if __name__ == "__main__":
     load_model()

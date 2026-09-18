@@ -9,6 +9,7 @@ from prayaas.logger import logger
 from pipeline.data_preprocessing import DataPreprocessing
 from pipeline.gradcam import compute_heatmap, colorize, overlay_heatmap
 from pipeline.model_loader import load_model
+from pipeline.segmentation_pipeline import segment_lesion
 
 
 class PredictionPipeline:
@@ -29,6 +30,13 @@ class PredictionPipeline:
         result = self._format(probabilities)
 
         try:
+            self._append_segmentation_steps(steps)
+        except Exception:
+            # Segmentation is a separate, optionally-trained model -- missing
+            # or failing must not cost the classification result.
+            logger.exception("U-Net segmentation failed")
+
+        try:
             self._append_gradcam_steps(steps, batch, result["predicted_class"])
         except Exception:
             # The classification result must still ship even if the
@@ -39,6 +47,14 @@ class PredictionPipeline:
             {"label": label, "image": self._encode_png(step_image)} for label, step_image in steps
         ]
         return result
+
+    @staticmethod
+    def _append_segmentation_steps(steps: list) -> None:
+        """Appends the U-Net's predicted lesion region, overlaid on the
+        full-resolution original -- shown before classification, matching the
+        segment-then-classify pipeline PRAYAAS's paper describes."""
+        original_image = steps[0][1]  # ("Original", full-res PIL image)
+        steps.append(("Lesion Segmentation (U-Net)", segment_lesion(original_image)))
 
     @staticmethod
     def _append_gradcam_steps(steps: list, batch: np.ndarray, predicted_class: int) -> None:

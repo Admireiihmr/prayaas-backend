@@ -75,6 +75,13 @@ class Settings:
         return self.models_dir / "model.json"
 
     @property
+    def unet_model_path(self) -> Path:
+        """Lesion-segmentation model trained in
+        src/prayaas/research/segmentation.ipynb. No MODEL_URL fallback for
+        this one -- if it's missing, segmentation is simply unavailable."""
+        return self.models_dir / "unet_segmentation.keras"
+
+    @property
     def metrics_path(self) -> Path:
         return self.artifacts_dir / "metrics.json"
 
