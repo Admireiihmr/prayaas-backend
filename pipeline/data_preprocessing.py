@@ -30,13 +30,9 @@ class DataPreprocessing:
 
         image = image.resize((settings.image_size, settings.image_size))
         array = np.array(image, dtype=np.uint8)
-        if steps is not None:
-            steps.append(("Resized (224×224)", Image.fromarray(array)))
 
         if settings.apply_clahe:
             array = apply_clahe(array)
-            if steps is not None:
-                steps.append(("Contrast Enhanced (CLAHE)", Image.fromarray(array)))
 
         return array.astype(np.float32) / 255.0
 
