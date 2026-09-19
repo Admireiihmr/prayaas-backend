@@ -29,20 +29,24 @@ class PredictionPipeline:
         probabilities = self.predict_array(batch)[0]
         result = self._format(probabilities)
 
-        lesion_mask = None
-        try:
-            lesion_mask = self._append_segmentation_steps(steps)
-        except Exception:
-            # Segmentation is a separate, optionally-trained model -- missing
-            # or failing must not cost the classification result.
-            logger.exception("U-Net segmentation failed")
+        # Highlighting a "lesion" on an image the classifier itself calls
+        # normal is misleading, not informative -- both explainability
+        # steps only make sense when something was actually found.
+        if result["label"] != "No Abnormality detected":
+            lesion_mask = None
+            try:
+                lesion_mask = self._append_segmentation_steps(steps)
+            except Exception:
+                # Segmentation is a separate, optionally-trained model --
+                # missing or failing must not cost the classification result.
+                logger.exception("U-Net segmentation failed")
 
-        try:
-            self._append_gradcam_steps(steps, batch, result["predicted_class"], lesion_mask)
-        except Exception:
-            # The classification result must still ship even if the
-            # explainability overlay fails to render.
-            logger.exception("Grad-CAM heatmap generation failed")
+            try:
+                self._append_gradcam_steps(steps, batch, result["predicted_class"], lesion_mask)
+            except Exception:
+                # The classification result must still ship even if the
+                # explainability overlay fails to render.
+                logger.exception("Grad-CAM heatmap generation failed")
 
         result["processing_steps"] = [
             {"label": label, "image": self._encode_png(step_image)} for label, step_image in steps
