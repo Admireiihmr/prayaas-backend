@@ -65,7 +65,10 @@ def load_segmentation_model():
     from pipeline.unet_architecture import build_unet
 
     logger.info("Loading segmentation weights from %s", settings.unet_model_path.name)
-    model = build_unet()
+    # pretrained=False: every weight gets overwritten by load_weights() right
+    # below, so there's no reason to download ImageNet weights on every cold
+    # start just to immediately discard them.
+    model = build_unet(pretrained=False)
     model.load_weights(str(settings.unet_model_path))
     return model
 

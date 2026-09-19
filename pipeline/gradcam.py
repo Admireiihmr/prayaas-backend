@@ -32,9 +32,21 @@ def colorize(heatmap: np.ndarray, size: tuple[int, int]) -> np.ndarray:
     return cv2.cvtColor(colored_bgr, cv2.COLOR_BGR2RGB)
 
 
-def overlay_heatmap(heatmap: np.ndarray, base_rgb: np.ndarray, alpha: float = 0.45) -> np.ndarray:
+def overlay_heatmap(
+    heatmap: np.ndarray, base_rgb: np.ndarray, alpha: float = 0.45, mask: np.ndarray | None = None
+) -> np.ndarray:
     """Blends the colorized heatmap over the base image, highlighting the
-    regions the model weighted most heavily for its prediction."""
+    regions the model weighted most heavily for its prediction.
+
+    `mask`, if given (same H, W as base_rgb; nonzero = keep), confines the
+    blend to those pixels -- elsewhere the base image shows through
+    unchanged. Lets a caller align Grad-CAM's visualization to e.g. a lesion
+    segmentation mask instead of coloring the whole image.
+    """
     colored_rgb = colorize(heatmap, base_rgb.shape[:2])
-    blended = colored_rgb.astype(np.float32) * alpha + base_rgb.astype(np.float32) * (1 - alpha)
+    alpha_map = np.full(base_rgb.shape[:2], alpha, dtype=np.float32)
+    if mask is not None:
+        alpha_map *= (mask > 0).astype(np.float32)
+    alpha_map = alpha_map[..., None]
+    blended = colored_rgb.astype(np.float32) * alpha_map + base_rgb.astype(np.float32) * (1 - alpha_map)
     return np.clip(blended, 0, 255).astype(np.uint8)
