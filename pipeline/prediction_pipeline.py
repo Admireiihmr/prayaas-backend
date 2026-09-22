@@ -32,7 +32,7 @@ class PredictionPipeline:
         # Highlighting a "lesion" on an image the classifier itself calls
         # normal is misleading, not informative -- both explainability
         # steps only make sense when something was actually found.
-        if result["label"] != "No Abnormality detected":
+        if result["label"] != "Normal":
             lesion_mask = None
             try:
                 lesion_mask = self._append_segmentation_steps(steps)

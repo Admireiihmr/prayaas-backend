@@ -4,7 +4,7 @@ from psycopg.rows import DictRow
 
 from prayaas.db import get_pool
 
-# Class 1 is "No Abnormality detected"; everything else warrants a referral.
+# Class 1 is "Normal"; everything else warrants a referral.
 NORMAL_CLASS = 1
 
 

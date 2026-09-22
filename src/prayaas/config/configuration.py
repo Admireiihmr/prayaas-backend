@@ -14,7 +14,7 @@ def _env(key: str, default: str) -> str:
 
 # The deployed model emits three classes in this order. Index matters — it maps
 # directly onto the model's output vector.
-CLASS_LABELS = ["Oral Cancer", "No Abnormality detected", "Oral premalignant lesion"]
+CLASS_LABELS = ["Cancer", "Normal", "Premalignant"]
 
 # The raw_data folders only cover two of those classes. OPMD (index 2) has no
 # local images, so it can be predicted but never appears as ground truth.
