@@ -119,18 +119,19 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bear
 
 
 def optional_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)) -> dict | None:
-    """Identifies the caller when a valid token is present, but never rejects.
+    """Identifies the caller when a token is present; no token at all is anonymous.
 
-    Lets /predict stay usable anonymously (and by the legacy client) while still
-    filing a signed-in user's screening against their dashboard.
+    Lets /predict stay usable without an account (and by the legacy client, which
+    sends no token) while still filing a signed-in user's screening.
+
+    A token that is present but bad is NOT anonymous: it gets the same 401 as any
+    other route. Quietly downgrading it meant the prediction ran, nothing was
+    saved, and the user was never told -- which is exactly what happened to every
+    session issued before the move to Firestore.
     """
     if credentials is None:
         return None
-    try:
-        payload = auth.decode_token(credentials.credentials)
-        return auth.get_user_by_id(payload["sub"])
-    except Exception:
-        return None
+    return current_user(credentials)
 
 
 # --- auth -------------------------------------------------------------------
