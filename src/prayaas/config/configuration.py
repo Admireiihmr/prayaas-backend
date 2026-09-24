@@ -36,7 +36,9 @@ class Settings:
     )
 
     artifacts_dir: Path = BACKEND_ROOT / "artifacts"
-    raw_data_dir: Path = BACKEND_ROOT / "artifacts" / "raw_data"
+    # Renamed from "raw_data" to "Old Data" on disk; folder names underneath
+    # (CANCER, NON CANCER) are unchanged.
+    raw_data_dir: Path = BACKEND_ROOT / "artifacts" / "Old Data"
     models_dir: Path = BACKEND_ROOT / "artifacts" / "models"
 
     # Pretrained weights published alongside the original Prayaas deployment.
@@ -47,8 +49,16 @@ class Settings:
         "MODEL_JSON_URL", "https://huggingface.co/akhilarayampalli/Prayaas/resolve/main/model.json"
     )
 
-    # Neon PostgreSQL. Never hardcode this — it carries the password.
-    database_url: str = _env("DATABASE_URL", "")
+    # Firebase service-account credentials for Firestore -- they carry a private
+    # key, so never hardcode or commit them. Either a path to the JSON file
+    # (local dev; relative paths resolve against backend/) or the JSON text
+    # itself, for hosts like Hugging Face Spaces / Render that have no file to
+    # point at. The JSON takes precedence if both are set.
+    firebase_credentials_path: str = _env("FIREBASE_CREDENTIALS_PATH", "")
+    firebase_credentials_json: str = _env("FIREBASE_CREDENTIALS_JSON", "")
+    # Bucket for uploaded scan images, e.g. "<project-id>.firebasestorage.app".
+    # Optional: unset, screenings are still recorded, just without the images.
+    firebase_storage_bucket: str = _env("FIREBASE_STORAGE_BUCKET", "")
     secret_key: str = _env("SECRET_KEY", "")
     jwt_expire_minutes: int = int(_env("JWT_EXPIRE_MINUTES", "10080"))  # 7 days
 

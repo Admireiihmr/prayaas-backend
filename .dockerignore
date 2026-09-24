@@ -10,3 +10,6 @@ tests/
 .git/
 artifacts/raw_data/*
 !artifacts/raw_data/.gitkeep
+
+# Keep service-account keys out of any locally-built image
+*firebase-adminsdk*.json

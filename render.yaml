@@ -14,7 +14,8 @@ services:
       - key: ENVIRONMENT
         value: production
       # Secrets: set these in the Render dashboard, never in this file.
-      - key: DATABASE_URL
+      # The service-account JSON, pasted as text (there is no file to point at).
+      - key: FIREBASE_CREDENTIALS_JSON
         sync: false
       - key: SECRET_KEY
         generateValue: true

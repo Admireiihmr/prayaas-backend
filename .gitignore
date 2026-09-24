@@ -22,3 +22,6 @@ artifacts/raw_data/*
 # rather not store 73 MB in the repo, ignore it here — model_loader.py downloads
 # it from MODEL_URL on first use.
 !artifacts/models/
+
+# Firebase service-account keys (contain a private key -- never commit)
+*firebase-adminsdk*.json

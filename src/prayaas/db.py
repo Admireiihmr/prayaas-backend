@@ -1,91 +1,99 @@
-"""Neon PostgreSQL connection pool and schema bootstrap."""
+"""Firestore client.
 
-from psycopg import Connection
-from psycopg.rows import DictRow, dict_row
-from psycopg_pool import ConnectionPool
+Layout:
 
-from prayaas.config.configuration import settings
-from prayaas.logger import logger
+    users/{sha256(lowercased email)}       full_name, email, password_hash,
+                                           is_profile_complete, created_at
+    users/{uid}/screenings/{auto id}       patient_name, gender, age, abha,
+                                           predicted_class, label, confidence,
+                                           created_at
 
-# Rows come back as dicts, not tuples. Spelling that out in the type keeps
-# row["email"] checkable rather than silently Any.
-DictPool = ConnectionPool[Connection[DictRow]]
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    id              SERIAL PRIMARY KEY,
-    full_name       TEXT        NOT NULL,
-    email           TEXT        NOT NULL UNIQUE,
-    password_hash   TEXT        NOT NULL,
-    is_profile_complete BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Emails are compared lower-cased, so the uniqueness guarantee must be too.
-CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx ON users (LOWER(email));
-
-CREATE TABLE IF NOT EXISTS screenings (
-    id              SERIAL PRIMARY KEY,
-    user_id         INTEGER     NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    patient_name    TEXT,
-    gender          TEXT,
-    age             INTEGER,
-    abha            TEXT,
-    predicted_class SMALLINT    NOT NULL,
-    label           TEXT        NOT NULL,
-    confidence      REAL        NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- The dashboard always reads one user's rows newest-first.
-CREATE INDEX IF NOT EXISTS screenings_user_created_idx ON screenings (user_id, created_at DESC);
+Firestore has no UNIQUE constraint, so the email hash doubles as the user's
+document ID and `create()` fails atomically on a duplicate. Screenings live in a
+per-user subcollection so "one user's rows, newest first" needs only Firestore's
+automatic single-field indexes -- no composite index to create by hand.
 """
 
-_pool: DictPool | None = None
+import json
+import threading
+from pathlib import Path
+
+import firebase_admin
+from firebase_admin import credentials, firestore
+from google.cloud.firestore import Client
+
+from prayaas.config.configuration import BACKEND_ROOT, settings
+from prayaas.logger import logger
+
+_app: firebase_admin.App | None = None
+_client: Client | None = None
+# Reentrant: get_db() holds it while calling get_app(), which takes it too.
+_lock = threading.RLock()
 
 
-def get_pool() -> DictPool:
-    """Lazily opens the pool so importing this module never hits the network."""
-    global _pool
+def _load_credentials() -> credentials.Certificate:
+    if settings.firebase_credentials_json:
+        return credentials.Certificate(json.loads(settings.firebase_credentials_json))
 
-    if _pool is None:
-        if not settings.database_url:
-            raise RuntimeError(
-                "DATABASE_URL is not set. Add your Neon connection string to backend/.env"
-            )
-        # Neon's pooler drops idle connections; check the connection before handing
-        # it out rather than surfacing a stale-socket error to the caller.
-        _pool = DictPool(
-            settings.database_url,
-            connection_class=Connection[DictRow],
-            min_size=1,
-            max_size=5,
-            open=True,
-            check=DictPool.check_connection,
-            kwargs={"row_factory": dict_row},
-        )
-        logger.info("Postgres pool opened")
+    if settings.firebase_credentials_path:
+        path = Path(settings.firebase_credentials_path)
+        if not path.is_absolute():
+            path = BACKEND_ROOT / path
+        return credentials.Certificate(str(path))
 
-    return _pool
+    raise RuntimeError(
+        "Firebase credentials are not set. Point FIREBASE_CREDENTIALS_PATH at your "
+        "service-account JSON in backend/.env, or set FIREBASE_CREDENTIALS_JSON."
+    )
+
+
+def get_app() -> firebase_admin.App:
+    """The one Firebase app, shared by Firestore and Storage.
+
+    Lazy so importing this module never hits the network, and locked because sync
+    endpoints run in a threadpool: two first requests racing into initialize_app
+    would make the second raise "default app already exists".
+    """
+    global _app
+
+    if _app is None:
+        with _lock:
+            if _app is None:
+                options = {"storageBucket": settings.firebase_storage_bucket} if settings.firebase_storage_bucket else None
+                _app = firebase_admin.initialize_app(_load_credentials(), options)
+
+    return _app
+
+
+def get_db() -> Client:
+    global _client
+
+    if _client is None:
+        with _lock:
+            if _client is None:
+                _client = firestore.client(get_app())
+                logger.info("Firestore client ready (project %s)", _client.project)
+
+    return _client
 
 
 def init_db() -> None:
-    with get_pool().connection() as conn:
-        conn.execute(SCHEMA)
-    logger.info("Database schema ready")
+    """Fails fast if the credentials are wrong or Firestore isn't enabled for the
+    project -- a cheap read, since there's no schema to create."""
+    list(get_db().collection("users").limit(1).stream())
+    logger.info("Firestore reachable")
 
 
-def close_pool() -> None:
-    global _pool
-    if _pool is not None:
-        _pool.close()
-        _pool = None
+def close_db() -> None:
+    global _app, _client
+    with _lock:
+        if _app is not None:
+            firebase_admin.delete_app(_app)
+        _app = _client = None
 
 
 if __name__ == "__main__":
     init_db()
-    with get_pool().connection() as conn:
-        version = conn.execute("SELECT version()").fetchone()
-        count = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()
-    print(version["version"] if version else "?")
-    print("users:", count["n"] if count else "?")
+    users = get_db().collection("users")
+    print("project:", get_db().project)
+    print("users:", users.count().get()[0][0].value)

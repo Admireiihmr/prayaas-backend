@@ -1,15 +1,29 @@
-"""Screening history: one row per prediction, plus the dashboard's aggregates."""
+"""Screening history: one document per prediction, plus the dashboard's aggregates."""
 
-from psycopg.rows import DictRow
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
-from prayaas.db import get_pool
+from google.cloud.firestore import Query
+from google.cloud.firestore_v1.base_query import FieldFilter
+
+from prayaas import storage
+from prayaas.db import get_db
+from prayaas.logger import logger
 
 # Class 1 is "Normal"; everything else warrants a referral.
 NORMAL_CLASS = 1
 
+# The dashboard needs several independent reads; running them concurrently keeps
+# its latency at one round trip instead of the sum of all of them.
+_executor = ThreadPoolExecutor(max_workers=3)
+
+
+def _screenings(user_id: str):
+    return get_db().collection("users").document(user_id).collection("screenings")
+
 
 def record(
-    user_id: int,
+    user_id: str,
     predicted_class: int,
     label: str,
     confidence: float,
@@ -17,75 +31,94 @@ def record(
     gender: str | None = None,
     age: int | None = None,
     abha: str | None = None,
-) -> DictRow:
-    with get_pool().connection() as conn:
-        row = conn.execute(
-            """
-            INSERT INTO screenings
-                (user_id, patient_name, gender, age, abha, predicted_class, label, confidence)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id, created_at
-            """,
-            (user_id, patient_name, gender, age, abha, predicted_class, label, confidence),
-        ).fetchone()
-
-    assert row is not None
-    return row
-
-
-HISTORY_SQL = """
-    SELECT id, patient_name, gender, age, abha, predicted_class, label, confidence, created_at
-    FROM screenings
-    WHERE user_id = %s
-    ORDER BY created_at DESC
-    LIMIT %s
-"""
-
-STATS_SQL = """
-    SELECT
-        COUNT(*)                                        AS total,
-        COUNT(*) FILTER (WHERE predicted_class <> %s)   AS flagged,
-        AVG(confidence)                                 AS avg_confidence,
-        MAX(created_at)                                 AS last_at
-    FROM screenings
-    WHERE user_id = %s
-"""
+) -> dict:
+    created_at = datetime.now(timezone.utc)
+    ref = _screenings(user_id).document()
+    ref.set(
+        {
+            "patient_name": patient_name,
+            "gender": gender,
+            "age": age,
+            "abha": abha,
+            "predicted_class": predicted_class,
+            "label": label,
+            "confidence": confidence,
+            "created_at": created_at,
+        }
+    )
+    return {"id": ref.id, "created_at": created_at}
 
 
-def _shape_stats(row: DictRow | None) -> dict:
-    """COUNT/AVG over zero rows give 0/NULL, so a new account is not an error."""
-    if row is None:
-        return {"total": 0, "flagged": 0, "avg_confidence": None, "last_at": None}
+def store_images(user_id: str, screening_id: str, files: dict[str, tuple[str, bytes, str]]) -> None:
+    """Uploads a screening's images to Storage, then records their paths on it.
 
-    avg = row["avg_confidence"]
+    files maps a role ("original", "segmentation", ...) to (filename, bytes,
+    content type). Runs after the response has gone out, so it never raises: an
+    image that fails to upload is logged and left out of the document's `images`
+    map, rather than the screening pointing at an object that isn't there.
+    """
+    prefix = storage.screening_prefix(user_id, screening_id)
+    paths = {}
+    for role, (filename, data, content_type) in files.items():
+        try:
+            paths[role] = storage.upload(f"{prefix}/{filename}", data, content_type)
+        except Exception:
+            logger.exception("Could not store %s image for screening %s", role, screening_id)
+
+    if not paths:
+        return
+    try:
+        _screenings(user_id).document(screening_id).update({"images": paths})
+    except Exception:
+        logger.exception("Could not record image paths on screening %s", screening_id)
+
+
+def _history(user_id: str, limit: int) -> list[dict]:
+    query = _screenings(user_id).order_by("created_at", direction=Query.DESCENDING).limit(limit)
+    return [{**snap.to_dict(), "id": snap.id} for snap in query.stream()]
+
+
+def _totals(user_id: str) -> tuple[int, float | None]:
+    query = _screenings(user_id).count(alias="total").avg("confidence", alias="avg_confidence")
+    results = {r.alias: r.value for r in query.get()[0]}
+    total = int(results["total"])
+    # Firestore averages zero documents to 0.0, not NULL; the dashboard treats
+    # None as "no data yet", and 0% confidence would be a false reading.
+    return total, results["avg_confidence"] if total else None
+
+
+def _flagged(user_id: str) -> int:
+    query = _screenings(user_id).where(filter=FieldFilter("predicted_class", "!=", NORMAL_CLASS))
+    return int(query.count(alias="flagged").get()[0][0].value)
+
+
+def _shape_stats(total: int, flagged: int, avg: float | None, last_at: datetime | None) -> dict:
+    """COUNT/AVG over zero docs give 0/None, so a new account is not an error."""
     return {
-        "total": int(row["total"]),
-        "flagged": int(row["flagged"]),
+        "total": total,
+        "flagged": flagged,
         "avg_confidence": round(float(avg), 4) if avg is not None else None,
-        "last_at": row["last_at"].isoformat() if row["last_at"] else None,
+        "last_at": last_at.isoformat() if last_at else None,
     }
 
 
-def dashboard(user_id: int, limit: int = 10) -> tuple[list[DictRow], dict]:
-    """History and totals over a single connection.
+def dashboard(user_id: str, limit: int = 10) -> tuple[list[dict], dict]:
+    """History and totals, fetched concurrently."""
+    history = _executor.submit(_history, user_id, limit)
+    totals = _executor.submit(_totals, user_id)
+    flagged = _executor.submit(_flagged, user_id)
 
-    Both queries share one pooled connection on purpose: every acquisition costs
-    a liveness check plus the query, and against Neon in another region that
-    round trip dominates. Fetching these separately made the dashboard ~1s
-    slower for no benefit.
-    """
-    with get_pool().connection() as conn:
-        rows = conn.execute(HISTORY_SQL, (user_id, limit)).fetchall()
-        stats_row = conn.execute(STATS_SQL, (NORMAL_CLASS, user_id)).fetchone()
-
-    return rows, _shape_stats(stats_row)
+    rows = history.result()
+    total, avg = totals.result()
+    last_at = rows[0]["created_at"] if rows else None
+    return rows, _shape_stats(total, flagged.result(), avg, last_at)
 
 
-def history(user_id: int, limit: int = 10) -> list[DictRow]:
-    with get_pool().connection() as conn:
-        return conn.execute(HISTORY_SQL, (user_id, limit)).fetchall()
+def history(user_id: str, limit: int = 10) -> list[dict]:
+    return _history(user_id, limit)
 
 
-def stats(user_id: int) -> dict:
-    with get_pool().connection() as conn:
-        return _shape_stats(conn.execute(STATS_SQL, (NORMAL_CLASS, user_id)).fetchone())
+def stats(user_id: str) -> dict:
+    latest = _history(user_id, 1)
+    total, avg = _totals(user_id)
+    return _shape_stats(total, _flagged(user_id), avg, latest[0]["created_at"] if latest else None)

@@ -11,6 +11,11 @@ from pipeline.gradcam import compute_heatmap, overlay_heatmap
 from pipeline.model_loader import load_model
 from pipeline.segmentation_pipeline import predict_mask, segment_lesion
 
+# Labels of the processing steps the UI shows. Named so callers that need to pick a
+# step out of processing_steps (e.g. to store it) don't repeat the display strings.
+SEGMENTATION_LABEL = "Lesion Segmentation (U-Net)"
+GRADCAM_LABEL = "Heatmap Overlay (Suspicious Regions)"
+
 
 class PredictionPipeline:
     """Scores images against the pretrained classifier."""
@@ -62,7 +67,7 @@ class PredictionPipeline:
         Returns the raw mask (256x256) so Grad-CAM can be confined to it."""
         original_image = steps[0][1]  # ("Original", full-res PIL image)
         mask = predict_mask(original_image)
-        steps.append(("Lesion Segmentation (U-Net)", segment_lesion(original_image, mask=mask)))
+        steps.append((SEGMENTATION_LABEL, segment_lesion(original_image, mask=mask)))
         return mask
 
     @staticmethod
@@ -88,7 +93,7 @@ class PredictionPipeline:
             mask_resized = np.array(Image.fromarray(lesion_mask).resize(size, Image.NEAREST))
 
         overlay = overlay_heatmap(heatmap, base_rgb, mask=mask_resized)
-        steps.append(("Heatmap Overlay (Suspicious Regions)", Image.fromarray(overlay)))
+        steps.append((GRADCAM_LABEL, Image.fromarray(overlay)))
 
     def predict_bytes(self, raw: bytes) -> dict:
         with Image.open(io.BytesIO(raw)) as image:

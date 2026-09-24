@@ -1,15 +1,15 @@
-"""Password hashing, JWT issuing, and the user table's queries."""
+"""Password hashing, JWT issuing, and the users collection's queries."""
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import bcrypt
 import jwt
-from psycopg import errors
-from psycopg.rows import DictRow
+from google.api_core.exceptions import AlreadyExists
 
 from prayaas.config.configuration import settings
-from prayaas.db import get_pool
+from prayaas.db import get_db
 
 ALGORITHM = "HS256"
 
@@ -33,7 +33,7 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 # ── tokens ───────────────────────────────────────────────────────────────────
 
-def create_token(user_id: int, email: str) -> str:
+def create_token(user_id: str, email: str) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user_id),
@@ -50,44 +50,67 @@ def decode_token(token: str) -> dict[str, Any]:
 
 # ── queries ──────────────────────────────────────────────────────────────────
 
-PUBLIC_COLUMNS = "id, full_name, email, is_profile_complete, created_at"
-
-
 class EmailTakenError(Exception):
     pass
 
 
-def create_user(full_name: str, email: str, password: str) -> DictRow:
-    with get_pool().connection() as conn:
-        try:
-            row = conn.execute(
-                f"""
-                INSERT INTO users (full_name, email, password_hash)
-                VALUES (%s, %s, %s)
-                RETURNING {PUBLIC_COLUMNS}
-                """,
-                (full_name.strip(), email.strip().lower(), hash_password(password)),
-            ).fetchone()
-        except errors.UniqueViolation as e:
-            raise EmailTakenError("An account with that email already exists.") from e
-
-    assert row is not None  # RETURNING on a successful INSERT always yields a row
-    return row
+def user_id_for(email: str) -> str:
+    """The user's document ID: a hash of the lower-cased email. Emails can contain
+    characters Firestore forbids in IDs (e.g. '/'), and making the ID a pure
+    function of the email is what lets create() enforce uniqueness atomically."""
+    return hashlib.sha256(email.strip().lower().encode()).hexdigest()
 
 
-def get_user_by_email(email: str) -> DictRow | None:
-    with get_pool().connection() as conn:
-        return conn.execute(
-            f"SELECT {PUBLIC_COLUMNS}, password_hash FROM users WHERE LOWER(email) = %s",
-            (email.strip().lower(),),
-        ).fetchone()
+def _users():
+    return get_db().collection("users")
 
 
-def get_user_by_id(user_id: int) -> DictRow | None:
-    with get_pool().connection() as conn:
-        return conn.execute(
-            f"SELECT {PUBLIC_COLUMNS} FROM users WHERE id = %s", (user_id,)
-        ).fetchone()
+def _row(user_id: str, data: dict) -> dict:
+    return {
+        "id": user_id,
+        "full_name": data["full_name"],
+        "email": data["email"],
+        "is_profile_complete": data.get("is_profile_complete", False),
+        "created_at": data["created_at"],
+    }
+
+
+def create_user(full_name: str, email: str, password: str) -> dict:
+    email = email.strip().lower()
+    user_id = user_id_for(email)
+    data = {
+        "full_name": full_name.strip(),
+        "email": email,
+        "password_hash": hash_password(password),
+        "is_profile_complete": False,
+        "created_at": datetime.now(timezone.utc),
+    }
+
+    try:
+        _users().document(user_id).create(data)
+    except AlreadyExists as e:
+        raise EmailTakenError("An account with that email already exists.") from e
+
+    return _row(user_id, data)
+
+
+def get_user_by_email(email: str) -> dict | None:
+    snap = _users().document(user_id_for(email)).get()
+    if not snap.exists:
+        return None
+
+    data = snap.to_dict()
+    return {**_row(snap.id, data), "password_hash": data["password_hash"]}
+
+
+def get_user_by_id(user_id: str) -> dict | None:
+    # user_id comes from a signed token, but a '/' would still turn the lookup
+    # into a path into a different collection -- reject rather than resolve it.
+    if not user_id or "/" in user_id:
+        return None
+
+    snap = _users().document(user_id).get()
+    return _row(snap.id, snap.to_dict()) if snap.exists else None
 
 
 def authenticate(email: str, password: str) -> dict | None:

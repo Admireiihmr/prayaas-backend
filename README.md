@@ -37,7 +37,7 @@ backend/
 │   ├── evaluation_pipeline.py  chains ingest -> predict -> evaluate
 │   └── prediction_pipeline.py  serves single-image predictions
 ├── src/prayaas/            core package
-│   ├── db.py               Neon PostgreSQL pool + schema
+│   ├── db.py               Firestore client
 │   ├── auth.py             bcrypt hashing, JWTs, user queries
 │   ├── config/             settings from .env
 │   └── research/           notebooks: processing, prediction, testing
@@ -86,16 +86,30 @@ Every route is served twice: under `/api/...` (what the frontend calls) and at t
 
 ## Auth
 
-Accounts live in **Neon PostgreSQL**. `src/prayaas/db.py` opens a small pooled connection and creates the `users` table on startup; `src/prayaas/auth.py` holds hashing, JWTs, and queries.
+Accounts and screening history live in **Firestore** (`users/{id}` and `users/{id}/screenings/{id}`). `src/prayaas/db.py` creates the client from a Firebase service-account key; `src/prayaas/auth.py` holds hashing, JWTs, and user queries.
 
 - Passwords are hashed with **bcrypt** and never stored or returned in the clear.
 - Login returns a **JWT** (HS256, signed with `SECRET_KEY`, 7-day expiry by default).
 - Wrong password and unknown email return the **same** 401 message, so responses cannot be used to enumerate accounts.
-- Emails are compared lower-cased, and a `LOWER(email)` unique index enforces that in the database too — `A@x.com` and `a@x.com` cannot both exist.
+- Emails are compared lower-cased, and a user's document ID is a hash of the lower-cased email, so Firestore's atomic `create()` enforces uniqueness — `A@x.com` and `a@x.com` cannot both exist.
 
-`DATABASE_URL` and `SECRET_KEY` come from `.env`, which is gitignored. Never hardcode them. If a connection string is ever pasted somewhere shared, rotate it in the Neon console — the password is right there in the URL.
+`SECRET_KEY` and the Firebase credentials come from `.env`, which is gitignored. Set `FIREBASE_CREDENTIALS_PATH` to your service-account JSON for local dev, or `FIREBASE_CREDENTIALS_JSON` to its text on hosts with no file to point at (Hugging Face Spaces, Render). The key file itself is gitignored too (`*firebase-adminsdk*.json`) — it carries a private key, so if one is ever committed or pasted somewhere shared, delete it in Firebase console → Project settings → Service accounts and generate a new one.
 
-Auth needs the database; screening does not. If Neon is unreachable the app still boots and `/predict` keeps working, while the auth routes fail — the startup log says so.
+Leave Firestore **and Storage** in locked mode (deny all client access): only this backend reads or writes them, through the Admin SDK, which bypasses security rules. Firebase's default "test mode" rules leave both open to the whole internet.
+
+### Stored images
+
+For signed-in users, `/predict` keeps the upload and its explainability overlays in Firebase Storage (set `FIREBASE_STORAGE_BUCKET`, e.g. `<project-id>.firebasestorage.app`; unset, screenings are still recorded, just without images). Objects mirror the Firestore path of the screening they belong to:
+
+```
+users/{uid}/screenings/{id}/original.jpg       the upload, byte for byte (extension follows its real format)
+users/{uid}/screenings/{id}/segmentation.png   U-Net lesion overlay   (abnormal results only)
+users/{uid}/screenings/{id}/gradcam.png        Grad-CAM overlay       (abnormal results only)
+```
+
+The screening document holds the object paths in an `images` map. Uploads run after the response is sent, so a slow or failed upload never delays or costs the user their result. Anonymous predictions store nothing — there is no owner to file a patient's photo under.
+
+Auth needs the database; screening does not. If Firestore is unreachable the app still boots and `/predict` keeps working, while the auth routes fail — the startup log says so.
 
 ## Two things worth knowing
 
